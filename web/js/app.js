@@ -31,14 +31,15 @@ function autosave(kind, id, obj, onSaved) {
 }
 
 // ---------------- login / sign-up ----------------
-function viewLogin(err = '', mode = 'login') {
+function viewLogin(err = '', mode = 'login', keep = {}) {
   const su = mode === 'signup';
+  const v = (k) => esc(keep[k] || '');
   main.innerHTML = `<div class="card" style="max-width:420px;margin:60px auto"><h2 style="margin-top:0">Cable Trace</h2>
     <p class="dim">${su ? 'Create an account with your invite code.' : 'Sign in to see your team\'s jobs.'}</p>
-    ${su ? '<label>Your name</label><input id="nm" autocomplete="name" style="width:100%">' : ''}
-    <label>Email</label><input id="em" type="email" autocomplete="username" style="width:100%">
+    ${su ? '<label>Your name</label><input id="nm" autocomplete="name" value="'+v('nm')+'" style="width:100%">' : ''}
+    <label>Email</label><input id="em" type="email" autocomplete="username" autocapitalize="off" value="'+v('em')+'" style="width:100%">
     <label>Password${su ? ' (at least 10 characters)' : ''}</label><input id="pw" type="password" autocomplete="${su ? 'new-password' : 'current-password'}" style="width:100%">
-    ${su ? '<label>Invite code</label><input id="cd" autocomplete="off" style="width:100%"><label>Team name (only if you are starting a new team)</label><input id="tn" style="width:100%">' : ''}
+    ${su ? '<label>Invite code</label><input id="cd" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" value="'+v('cd')+'" style="width:100%"><label>Team name (only if you are starting a new team)</label><input id="tn" value="'+v('tn')+'" style="width:100%">' : ''}
     <p class="warn">${esc(err)}</p>
     <div class="row"><button class="primary" id="go">${su ? 'Create account' : 'Sign in'}</button>
     <a href="#" id="sw">${su ? 'I already have an account' : 'I have an invite code'}</a></div></div>`;
@@ -47,7 +48,10 @@ function viewLogin(err = '', mode = 'login') {
       if (su) await signup({ name: $('#nm').value, email: $('#em').value, password: $('#pw').value, code: $('#cd').value, teamName: $('#tn').value });
       else await login($('#em').value, $('#pw').value);
       route();
-    } catch (e) { viewLogin(e.status ? e.message : 'Could not reach the server', mode); }
+    } catch (e) {
+      const g = (i) => document.querySelector(i)?.value || '';
+      viewLogin(e.status ? e.message : 'Could not reach the server', mode, { nm: g('#nm'), em: g('#em'), cd: g('#cd'), tn: g('#tn') });
+    }
   };
   $('#go').onclick = go; $('#pw').onkeydown = (e) => e.key === 'Enter' && go();
   $('#sw').onclick = (e) => { e.preventDefault(); viewLogin('', su ? 'login' : 'signup'); };
