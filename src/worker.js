@@ -251,7 +251,7 @@ function contentTypeFor(name) {
 // ---- router ----
 async function handleApi(request, env, url) {
   const p = url.pathname, m = request.method;
-  if (p === '/api/ping') return json({ ok: true, name: 'cable-trace', version: 2, accounts: true });
+  if (p === '/api/ping') return json({ ok: true, name: 'cable-trace', version: 2, accounts: true, signupCodeSet: !!env.SIGNUP_CODE });
   if (p === '/api/auth/signup' && m === 'POST') return signup(request, env);
   if (p === '/api/auth/login' && m === 'POST') return login(request, env);
 
