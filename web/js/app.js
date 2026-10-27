@@ -1,5 +1,6 @@
 import { state, login, signup, loadMe, changePassword, logout, pull, subscribe, list, get, save, remove, uid, api, fileUrl, uploadImage } from './api.js';
 import { Tracer } from './drawing2d.js';
+import { fmt, num, parseLen, getUnit, toggleUnit, toUnit } from './units.js';
 import { Model3D, ROUTE_KINDS } from './model3d.js';
 import { lengthFromLoop, defaultReturnSize, wpLength, checkLength, positionAlong, polyLength, asBuiltPoints } from './lengths.js';
 
@@ -24,10 +25,13 @@ export function ask(title, fields, text = '') {
   });
 }
 
-function flush() { clearTimeout(saveTimer); }
+let pendingSave = null;
+function flush() { clearTimeout(saveTimer); const f = pendingSave; pendingSave = null; if (f) f(); } // leaving a page must not drop an edit
 function autosave(kind, id, obj, onSaved) {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => { try { await save(kind, id, obj); onSaved?.(); } catch (e) { alert('Save failed: ' + e.message); } }, 500);
+  const run = async () => { pendingSave = null; try { await save(kind, id, structuredClone(obj)); onSaved?.(); } catch (e) { alert('Save failed: ' + e.message); } };
+  pendingSave = run;
+  saveTimer = setTimeout(run, 500);
 }
 
 // ---------------- login / sign-up ----------------
@@ -114,7 +118,7 @@ function viewJob(id) {
       <div class="grid" style="margin-top:10px">${runs.map((r) => {
         const rec = wpLength(r.waypoints || []), v = checkLength(rec, r.expectedLengthM);
         return `<a class="item" href="#/run/${r.id}"><b>${esc(r.circuitRef)}</b><div class="dim">${esc(r.cableType)} ${esc(r.sizeMm2)}mm²</div>
-        <div class="dim">${(r.waypoints || []).length ? `${r.waypoints.length} points · ${rec.toFixed(1)} m` : 'Not recorded yet'}</div>${v.warn ? '<div class="warn">⚠ Length check</div>' : ''}</a>`; }).join('') || '<p class="dim">No runs yet.</p>'}</div></div>`;
+        <div class="dim">${(r.waypoints || []).length ? `${r.waypoints.length} points · ${fmt(rec, 1)}` : 'Not recorded yet'}</div>${v.warn ? '<div class="warn">⚠ Length check</div>' : ''}</a>`; }).join('') || '<p class="dim">No runs yet.</p>'}</div></div>`;
 
   $('#file').onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
@@ -172,24 +176,32 @@ function viewDrawing(id) {
     main.querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
     $('#body').innerHTML = `<div class="editor" style="margin-top:10px"><div><div class="tools" id="tools"></div><div class="stage" id="stage"></div><div class="hint" id="hint"></div></div><div class="card side" id="side" style="margin:0"></div></div>`;
     if (t === 'trace') {
-      const tools = [['pan', 'Pan'], ['calib', 'Set scale'], ['check', 'Check scale'], ['wall', 'Walls'], ['opening', 'Door / window'], ['marker', 'Marker'], ['erase', 'Erase']];
-      $('#tools').innerHTML = tools.map(([k, l]) => `<button data-tool="${k}">${l}</button>`).join('');
+      const tools = [['pan', 'Pan'], ['calib', 'Set scale'], ['ratio', 'Scale ratio'], ['check', 'Check scale'], ['measure', 'Measure'], ['wall', 'Walls'], ['opening', 'Door / window'], ['marker', 'Marker'], ['erase', 'Erase']];
+      $('#tools').innerHTML = tools.map(([k, l]) => `<button data-tool="${k}">${l}</button>`).join('') +
+        '<span class="zoom"><button data-zoom="out" title="Zoom out">−</button><button data-zoom="in" title="Zoom in">+</button><button data-zoom="fit" title="Fit the drawing">Fit</button></span>';
       tracer = new Tracer($('#stage'), d, { onChange: changed, ask });
-      const pick = (k) => { tracer.setTool(k); $('#tools').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.tool === k)); hint(k); };
-      $('#tools').onclick = (e) => e.target.dataset.tool && pick(e.target.dataset.tool);
+      const pick = (k) => { tracer.setTool(k); $('#tools').querySelectorAll('[data-tool]').forEach((b) => b.classList.toggle('on', b.dataset.tool === k)); hint(k); };
+      $('#tools').onclick = (e) => {
+        const z = e.target.dataset.zoom;
+        if (z) { z === 'fit' ? (tracer.fit(), tracer.draw()) : tracer.zoomBy(z === 'in' ? 1.4 : 1 / 1.4); return; }
+        if (e.target.dataset.tool) pick(e.target.dataset.tool);
+      };
       pick(d.pxPerM ? 'wall' : 'calib');
     } else {
-      $('#tools').innerHTML = `<button id="planv">Plan view</button><button id="iso">Reset view</button>`;
+      $('#tools').innerHTML = `<button id="planv">Plan view</button><button id="iso">Reset view</button><span class="zoom"><button id="zo" title="Zoom out">−</button><button id="zi" title="Zoom in">+</button></span>`;
       model = new Model3D($('#stage'), d, { onChange: changed });
       model.selected = selRoute; applyAsBuilt();
+      $('#zi').onclick = () => model.zoomBy(1 / 1.4); $('#zo').onclick = () => model.zoomBy(1.4);
       $('#planv').onclick = () => model.plan(); $('#iso').onclick = () => model.frameAll();
-      $('#hint').textContent = d.pxPerM ? 'Pick a route, then click walls, the floor or the ceiling to add points. Drag to orbit, wheel to zoom, right-drag to pan.' : 'Set the scale on the Trace tab first.';
+      $('#hint').textContent = d.pxPerM ? 'Pick a route, then click walls, the floor or the ceiling to add points. Drag to orbit, wheel or pinch to zoom, right-drag or two fingers to pan.' : 'Set the scale on the Trace tab first.';
     }
     side();
   }
   function hint(k) {
     $('#hint').textContent = {
-      pan: 'Drag to move, wheel to zoom.', calib: 'Tap both ends of a printed dimension, then type its real length. This sets the scale for everything.',
+      pan: 'Drag to move, wheel or pinch to zoom, or use the + / − buttons.', calib: 'Tap both ends of a printed dimension, then type its real length. This sets the scale for everything.',
+      ratio: 'Use when the drawing says a scale such as 1:24 or 1/4" = 1\'. Tap two ends of something you can measure on the paper (or both ends of the sheet edge), then choose the scale.',
+      measure: 'Tap two points to read the distance in the current unit (m / ft).',
       check: 'Tap both ends of a SECOND printed dimension to check the scale. A big error means a skewed photo or a reduced print.',
       wall: 'Tap corners to trace walls (snaps to corners and square angles). Press Enter to type an exact length, Esc or double-click to stop, hold Alt to ignore snapping.',
       opening: 'Tap a wall where the door or window is.', marker: 'Tap the wall where the printed marker will be stuck (it faces the side you tap).', erase: 'Tap a wall, opening or the marker to delete it.' }[k] || '';
@@ -200,25 +212,25 @@ function viewDrawing(id) {
     if (tab === 'trace') {
       const chk = d.check; const bad = chk && chk.errPct != null && Math.abs(chk.errPct) > 3;
       el.innerHTML = `<h3 style="margin-top:0">Drawing</h3>
-        <div>${d.pxPerM ? `Scale: <b>${(1 / d.pxPerM * 1000).toFixed(2)} mm</b> per pixel` : '<span class="warn">Scale not set</span>'}</div>
+        <div>${d.pxPerM ? `Scale set${d.scaleRatio ? `: drawn at <b>1:${d.scaleRatio}</b>` : ''} · image is ${fmt(d.imgW / d.pxPerM, 1)} wide` : '<span class="warn">Scale not set</span>'}</div>
         ${chk && chk.errPct != null ? `<div class="${bad ? 'warn' : 'ok'}">Check dimension: ${chk.errPct >= 0 ? '+' : ''}${chk.errPct.toFixed(1)}% ${bad ? '— photo is skewed or the print was reduced. Retake it flat-on.' : '— good'}</div>` : '<div class="dim">No second dimension checked yet.</div>'}
-        <label>Ceiling height (m)</label><input id="ceil" type="number" step="0.01" value="${d.ceilingM}">
-        <label>Wall thickness (m)</label><input id="thick" type="number" step="0.01" value="${d.wallThicknessM}">
+        <label>Ceiling height (${getUnit()})</label><input id="ceil" value="${num(d.ceilingM, 2)}">
+        <label>Wall thickness (${getUnit()})</label><input id="thick" value="${num(d.wallThicknessM, 3)}">
         <label>Level name</label><input id="lvl" value="${esc(d.name)}">
         <p class="dim">${d.walls.length} walls · ${d.openings.length} openings · marker ${d.marker ? 'placed' : 'not placed'}</p>
         <p class="hint">Photograph the drawing flat-on and well lit. Use the Check scale tool on a second dimension — it catches a crooked photo.</p>
         <p><a href="/marker.html" target="_blank">Print the marker sheet</a><br><span class="hint">Stick it where you placed the marker. The phone uses it to line routes up with the building.</span></p>`;
-      $('#ceil').onchange = (e) => { d.ceilingM = Number(e.target.value) || 2.4; changed(); };
-      $('#thick').onchange = (e) => { d.wallThicknessM = Number(e.target.value) || 0.1; changed(); };
+      $('#ceil').onchange = (e) => { const v = parseLen(e.target.value); d.ceilingM = v > 0 ? v : 2.4; changed(); };
+      $('#thick').onchange = (e) => { const v = parseLen(e.target.value); d.wallThicknessM = v > 0 ? v : 0.1; changed(); };
       $('#lvl').onchange = (e) => { d.name = e.target.value; changed(); };
       return;
     }
     const sel = d.routes.find((r) => r.id === selRoute);
     el.innerHTML = `<div class="row"><h3 style="margin:0;flex:1">Routes</h3><button id="nr" class="primary">New route</button></div>
       <div style="margin:8px 0">${d.routes.map((r) => `<div class="row" style="margin:4px 0"><button data-sel="${r.id}" class="${r.id === selRoute ? 'on' : ''}" style="flex:1;text-align:left">
-        <span style="color:#${(ROUTE_KINDS[r.kind] || ROUTE_KINDS.cable).color.toString(16).padStart(6, '0')}">●</span> ${esc(r.name)} · ${polyLength(r.points).toFixed(1)} m</button></div>`).join('') || '<p class="dim">No routes yet.</p>'}</div>
-      ${asBuiltRuns.length ? `<h4 style="margin:12px 0 4px">As built (recorded on site)</h4>${asBuiltRuns.map((r) => `<label style="display:flex;gap:6px;align-items:center;color:var(--text);font-size:14px"><input type="checkbox" data-ab="${r.id}" ${showRuns.has(r.id) ? 'checked' : ''}> <span style="color:#00e5b0">●</span> ${esc(r.circuitRef)} · ${wpLength(r.waypoints).toFixed(1)} m</label>`).join('')}` : ''}
-      <label>Fixed height for new points (m) — leave blank to click on surfaces</label><input id="hov" type="number" step="0.05" placeholder="e.g. 2.4 for tray" style="width:100%">
+        <span style="color:#${(ROUTE_KINDS[r.kind] || ROUTE_KINDS.cable).color.toString(16).padStart(6, '0')}">●</span> ${esc(r.name)} · ${fmt(polyLength(r.points), 1)}</button></div>`).join('') || '<p class="dim">No routes yet.</p>'}</div>
+      ${asBuiltRuns.length ? `<h4 style="margin:12px 0 4px">As built (recorded on site)</h4>${asBuiltRuns.map((r) => `<label style="display:flex;gap:6px;align-items:center;color:var(--text);font-size:14px"><input type="checkbox" data-ab="${r.id}" ${showRuns.has(r.id) ? 'checked' : ''}> <span style="color:#00e5b0">●</span> ${esc(r.circuitRef)} · ${fmt(wpLength(r.waypoints), 1)}</label>`).join('')}` : ''}
+      <label>Fixed height for new points (${getUnit()}) — leave blank to click on surfaces</label><input id="hov" placeholder="e.g. ${num(2.4, 1)} for tray" style="width:100%">
       ${sel ? routePanel(sel) : ''}`;
     $('#nr').onclick = async () => {
       const r = await ask('New route', [{ name: 'name', label: 'Name (e.g. Kitchen ring)' }, { name: 'kind', label: 'Type', type: 'select', options: Object.keys(ROUTE_KINDS), value: 'cable' }]);
@@ -226,26 +238,26 @@ function viewDrawing(id) {
       d.routes.push({ id: rid, name: r.name.trim(), kind: r.kind, points: [], runId: null }); selRoute = rid; model.selected = rid; model.drawing_route = rid; changed();
     };
     el.querySelectorAll('[data-sel]').forEach((b) => b.onclick = () => { selRoute = b.dataset.sel; model.select(selRoute); model.drawing_route = selRoute; side(); });
-    $('#hov').oninput = (e) => { model.heightOverride = e.target.value; };
-    if (model) $('#hov').value = model.heightOverride ?? '';
+    $('#hov').oninput = (e) => { const v = parseLen(e.target.value); model.heightOverride = e.target.value.trim() && v >= 0 ? String(v) : ''; el.dataset.hov = e.target.value; };
+    if (model) $('#hov').value = el.dataset.hov || '';
     el.querySelectorAll('[data-ab]').forEach((c) => c.onchange = () => { c.checked ? showRuns.add(c.dataset.ab) : showRuns.delete(c.dataset.ab); applyAsBuilt(); });
     if (sel) wireRoute(el, sel);
   }
 
   function routePanel(r) {
     const run = r.runId ? runs.find((x) => x.id === r.runId) : null, len = polyLength(r.points);
-    const cmp = run ? (() => { const rec = wpLength(run.waypoints || []); return `<div class="hint">Recorded on site: ${rec ? rec.toFixed(1) + ' m' : 'not recorded'}${run.expectedLengthM ? ` · cable length ${Number(run.expectedLengthM).toFixed(1)} m` : ''}</div>`; })() : '';
+    const cmp = run ? (() => { const rec = wpLength(run.waypoints || []); return `<div class="hint">Recorded on site: ${rec ? fmt(rec, 1) : 'not recorded'}${run.expectedLengthM ? ` · cable length ${fmt(Number(run.expectedLengthM), 1)}` : ''}</div>`; })() : '';
     return `<div class="card" style="margin:10px 0 0"><div class="row"><b style="flex:1">${esc(r.name)}</b><button class="danger" id="dr">Delete</button></div>
-      <div>Planned length: <b>${len.toFixed(2)} m</b> (${r.points.length} points)</div>
+      <div>Planned length: <b>${fmt(len, 2)}</b> (${r.points.length} points)</div>
       <label>Linked cable run</label><select id="lr"><option value="">— none —</option>${runs.map((x) => `<option value="${x.id}" ${x.id === r.runId ? 'selected' : ''}>${esc(x.circuitRef)}</option>`).join('')}</select>${cmp}
-      <label>Points (m): x, height, z</label>
-      <table>${r.points.map((p, i) => `<tr><td>${i + 1}</td>${[0, 1, 2].map((k) => `<td><input class="n" type="number" step="0.01" data-p="${i}" data-k="${k}" value="${p[k]}"></td>`).join('')}
+      <label>Points (${getUnit()}): x, height, z</label>
+      <table>${r.points.map((p, i) => `<tr><td>${i + 1}</td>${[0, 1, 2].map((k) => `<td><input class="n" data-p="${i}" data-k="${k}" value="${num(p[k], 3)}"></td>`).join('')}
         <td><button data-drop="${i}" title="Add a point straight down to 0.3 m">↓</button> <button data-rm="${i}" class="danger">✕</button></td></tr>`).join('')}</table></div>`;
   }
   function wireRoute(el, r) {
     $('#dr').onclick = () => { if (!confirm('Delete this route?')) return; d.routes = d.routes.filter((x) => x.id !== r.id); selRoute = null; model.selected = null; model.drawing_route = null; changed(); };
     $('#lr').onchange = (e) => { r.runId = e.target.value || null; changed(); };
-    el.querySelectorAll('[data-p]').forEach((i) => i.onchange = () => { r.points[+i.dataset.p][+i.dataset.k] = Number(i.value) || 0; changed(); });
+    el.querySelectorAll('[data-p]').forEach((i) => i.onchange = () => { const v = parseLen(i.value); r.points[+i.dataset.p][+i.dataset.k] = Number.isNaN(v) ? 0 : v; changed(); });
     el.querySelectorAll('[data-rm]').forEach((b) => b.onclick = () => { r.points.splice(+b.dataset.rm, 1); changed(); });
     el.querySelectorAll('[data-drop]').forEach((b) => b.onclick = () => { const p = r.points[+b.dataset.drop]; r.points.splice(+b.dataset.drop + 1, 0, [p[0], 0.3, p[2]]); changed(); });
   }
@@ -277,10 +289,10 @@ function viewRun(id) {
           <div class="hint">Loop resistance: circuit isolated, proved dead, far end shorted. Never connect a transmitter or terminator to a live circuit.</div>
           <div class="row"><div><label>Loop resistance (Ω)</label><input id="loop" type="number" step="0.001" value="${r.loopMilliohm != null ? r.loopMilliohm / 1000 : ''}"></div>
             <button id="tolen" style="align-self:flex-end">→ length</button>
-            <div><label>Actual cable length (m)</label><input id="len" type="number" step="0.1" value="${r.expectedLengthM ?? ''}"></div>
+            <div><label>Actual cable length (${getUnit()})</label><input id="len" value="${r.expectedLengthM != null ? num(r.expectedLengthM, 2) : ''}"></div>
             <div><label>Plug circuit no.</label><input id="plug" type="number" value="${r.plugId ?? ''}" style="width:90px"></div></div>
           <div class="${v.warn ? 'banner' : 'dim'}" style="margin-top:10px">${esc(r.waypoints.length >= 2 ? v.message : 'Record the run on site to compare lengths.')}</div>
-          <div class="row" style="margin-top:8px"><div><label>Distance along cable to a fault or break (m)</label><input id="brk" type="number" step="0.1"></div><button id="loc" style="align-self:flex-end">Locate</button><span id="locmsg"></span></div></div>
+          <div class="row" style="margin-top:8px"><div><label>Distance along cable to a fault or break (${getUnit()})</label><input id="brk"></div><button id="loc" style="align-self:flex-end">Locate</button><span id="locmsg"></span></div></div>
         <div class="card"><h3 style="margin-top:0">Recorded points</h3>
           ${r.waypoints.length ? `<table><tr><th>#</th><th>Kind</th><th>Depth mm</th><th>Note</th><th>Photo</th><th></th></tr>${r.waypoints.map((w, i) => `<tr><td>${i + 1}</td>
             <td><select data-w="${i}" data-f="kind">${KINDS.map((k) => `<option ${k === w.kind ? 'selected' : ''}>${k}</option>`).join('')}</select></td>
@@ -288,7 +300,7 @@ function viewRun(id) {
             <td><input data-w="${i}" data-f="note" value="${esc(w.note)}"></td>
             <td>${w.photoFile ? `<a href="${fileUrl(w.photoFile)}" target="_blank"><img class="thumb" src="${fileUrl(w.photoFile)}"></a>` : ''}</td>
             <td><button data-rm="${i}" class="danger">✕</button></td></tr>`).join('')}</table>
-          <p class="dim">${r.waypoints.length} points · ${rec.toFixed(1)} m (AR estimate, ±10%)</p>` : '<p class="dim">Nothing recorded yet. Record the run in the phone app and it appears here after sync.</p>'}</div></div>
+          <p class="dim">${r.waypoints.length} points · ${fmt(rec, 1)} (AR estimate, ±10%)</p>` : '<p class="dim">Nothing recorded yet. Record the run in the phone app and it appears here after sync.</p>'}</div></div>
         <div class="card side" style="margin:0"><h3 style="margin-top:0">Route (top view)</h3><canvas id="plot" width="280" height="280" style="width:100%;background:#000;border-radius:8px"></canvas>
           <p class="hint">Plan view of the recorded points in the phone's AR frame. Shape only — not to a drawing.</p></div></div>`;
     wire(); plot();
@@ -300,13 +312,13 @@ function viewRun(id) {
     $('#size').onchange = (e) => { r.sizeMm2 = e.target.value; changed(); };
     $('#notes').onchange = (e) => { r.notes = e.target.value; changed(); };
     $('#loop').onchange = (e) => { r.loopMilliohm = e.target.value === '' ? null : Math.round(Number(e.target.value) * 1000); changed(); };
-    $('#len').onchange = (e) => { r.expectedLengthM = e.target.value === '' ? null : Number(e.target.value); changed(); render(); };
+    $('#len').onchange = (e) => { const v = parseLen(e.target.value); r.expectedLengthM = e.target.value.trim() === '' || !(v > 0) ? null : v; changed(); render(); };
     $('#plug').onchange = (e) => { r.plugId = e.target.value === '' ? null : Number(e.target.value); changed(); };
     $('#tolen').onclick = () => {
       const size = Number(r.sizeMm2), l = lengthFromLoop((r.loopMilliohm || 0) / 1000, size, defaultReturnSize(r.cableType, size));
       if (!l) { alert('Enter the loop resistance in ohms first.'); return; } r.expectedLengthM = Math.round(l * 10) / 10; changed(); render();
     };
-    $('#loc').onclick = () => { const p = positionAlong(r.waypoints, Number($('#brk').value)); $('#locmsg').textContent = p ? `${Number($('#brk').value).toFixed(1)} m from the start is ${p}.` : 'Enter a distance and record the run first.'; };
+    $('#loc').onclick = () => { const dm = parseLen($('#brk').value); const p = positionAlong(r.waypoints, dm); $('#locmsg').textContent = p ? `${fmt(dm, 1)} from the start is ${p}.` : 'Enter a distance and record the run first.'; };
     main.querySelectorAll('[data-w]').forEach((el) => el.onchange = () => {
       const w = r.waypoints[+el.dataset.w], f = el.dataset.f;
       w[f] = f === 'depthMm' ? (el.value === '' ? null : Number(el.value)) : el.value; changed();
@@ -336,6 +348,10 @@ function route() {
   catch (e) { main.innerHTML = `<div class="banner">Something went wrong: ${esc(e.message)}</div>`; console.error(e); }
 }
 $('#logout').onclick = async () => { await logout(); route(); };
+const unitBtn = $('#unit');
+const showUnit = () => { unitBtn.textContent = getUnit() === 'ft' ? 'ft' : 'm'; unitBtn.title = 'Switch between metres and feet'; };
+unitBtn.onclick = () => { toggleUnit(); showUnit(); route(); };
+showUnit();
 window.addEventListener('hashchange', route);
 
 // Re-render list views when the phone syncs new data; leave editors alone.

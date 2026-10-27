@@ -1,6 +1,7 @@
 // 2D drawing tracer: calibrate scale from printed dimensions, trace walls, add openings and a marker.
 // Everything is stored in IMAGE PIXELS so re-calibrating rescales the model, not the tracing.
 import { uid, fileUrl } from './api.js';
+import { fmt, num, parseLen, getUnit, toUnit, SCALES, scaleByLabel, SHEETS, niceBar } from './units.js';
 
 const SNAP_PX = 12;
 const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
@@ -13,7 +14,8 @@ export class Tracer {
     this.ctx = this.canvas.getContext('2d');
     this.tool = 'pan'; this.view = { s: 1, ox: 0, oy: 0 };
     this.chain = null;      // last point of the wall being drawn
-    this.pending = null;    // first point of calibration / check
+    this.pending = null;    // first point of calibration / check / measure
+    this.measured = null;   // last measurement {a,b}
     this.mouse = [0, 0];
     this.img = new Image();
     this.img.onload = () => { this.fit(); this.draw(); };
@@ -22,6 +24,11 @@ export class Tracer {
     new ResizeObserver(() => { this.resize(); this.draw(); }).observe(stage);
   }
 
+  zoomBy(f, cx, cy) {
+    const v = this.view, w = this.canvas.width / this.dpr, h = this.canvas.height / this.dpr;
+    const mx = cx ?? w / 2, my = cy ?? h / 2, ns = Math.max(0.02, Math.min(60, v.s * f));
+    v.ox = mx - (mx - v.ox) * ns / v.s; v.oy = my - (my - v.oy) * ns / v.s; v.s = ns; this.draw();
+  }
   get ppm() { return this.drawing.pxPerM || 0; }
   setTool(t) { this.tool = t; this.chain = null; this.pending = null; this.draw(); }
 
@@ -76,12 +83,25 @@ export class Tracer {
   bind() {
     const c = this.canvas;
     let drag = null;
+    const ptrs = new Map();   // active pointers, for two-finger pinch zoom and pan
+    let pinch = null;
+    const centre = () => { const [p1, p2] = [...ptrs.values()]; return { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2, d: Math.hypot(p1.x - p2.x, p1.y - p2.y) || 1 }; };
     c.addEventListener('pointerdown', (e) => {
       c.setPointerCapture(e.pointerId);
+      ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (ptrs.size === 2) { const m = centre(); pinch = { d: m.d, x: m.x, y: m.y }; drag = null; return; }
       drag = { x: e.clientX, y: e.clientY, ox: this.view.ox, oy: this.view.oy, moved: false, pan: this.tool === 'pan' || e.button === 1 || e.button === 2 };
     });
     c.addEventListener('pointermove', (e) => {
       this.mouse = this.toImg(e);
+      if (ptrs.has(e.pointerId)) ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pinch && ptrs.size >= 2) {
+        const m = centre(), r = c.getBoundingClientRect();
+        this.view.ox += m.x - pinch.x; this.view.oy += m.y - pinch.y;
+        this.zoomBy(m.d / pinch.d, m.x - r.left, m.y - r.top);
+        pinch = { d: m.d, x: m.x, y: m.y };
+        return;
+      }
       if (drag) {
         const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
         if (Math.hypot(dx, dy) > 4) drag.moved = true;
@@ -89,10 +109,14 @@ export class Tracer {
       }
       this.draw();
     });
-    c.addEventListener('pointerup', (e) => {
+    const up = (e) => {
+      ptrs.delete(e.pointerId);
+      if (pinch) { if (ptrs.size < 2) pinch = null; drag = null; return; }
       const d = drag; drag = null;
-      if (d && !d.moved && !d.pan) this.click(this.toImg(e), e);
-    });
+      if (d && !d.moved && !d.pan && e.type === 'pointerup') this.click(this.toImg(e), e);
+    };
+    c.addEventListener('pointerup', up);
+    c.addEventListener('pointercancel', up);
     c.addEventListener('contextmenu', (e) => e.preventDefault());
     c.addEventListener('dblclick', () => { this.chain = null; this.draw(); });
     c.addEventListener('wheel', (e) => {
@@ -105,7 +129,7 @@ export class Tracer {
     }, { passive: false });
     this.keyHandler = async (e) => {
       if (e.target.closest && e.target.closest('input,textarea,select,dialog')) return;
-      if (e.key === 'Escape') { this.chain = null; this.pending = null; this.draw(); }
+      if (e.key === 'Escape') { this.chain = null; this.pending = null; this.measured = null; this.draw(); }
       if (e.key === 'Enter' && this.tool === 'wall' && this.chain) { e.preventDefault(); await this.typedLength(); }
     };
     window.addEventListener('keydown', this.keyHandler);
@@ -115,8 +139,8 @@ export class Tracer {
   async typedLength() {
     if (!this.ppm) return;
     const a = this.chain, p = this.snapPoint(this.mouse, a, false);
-    const r = await this.ask('Wall length', [{ name: 'm', label: 'Length (m), in the direction of the cursor', type: 'number', value: '', step: 'any' }]);
-    const m = r && Number(r.m);
+    const r = await this.ask('Wall length', [{ name: 'm', label: `Length (${getUnit()}), in the direction of the cursor. You can type 12'6", 3.2m or 1250mm`, type: 'text', value: '' }]);
+    const m = r && parseLen(r.m);
     if (!(m > 0)) return;
     const ang = Math.atan2(p[1] - a[1], p[0] - a[0]);
     const b = [a[0] + Math.cos(ang) * m * this.ppm, a[1] + Math.sin(ang) * m * this.ppm];
@@ -137,17 +161,45 @@ export class Tracer {
         const a = this.pending; this.pending = null;
         const px = dist(a, p);
         const r = await this.ask(this.tool === 'calib' ? 'Set scale' : 'Check a second dimension',
-          [{ name: 'm', label: 'Real distance between the two points (m), as printed on the drawing', type: 'number', value: '', step: 'any' }]);
-        const m = r && Number(r.m);
+          [{ name: 'm', label: `Real distance between the two points (${getUnit()}), as printed on the drawing. You can type 12'6", 3.2m or 1250mm`, type: 'text', value: '' }]);
+        const m = r && parseLen(r.m);
         if (!(m > 0) || px < 3) break;
         if (this.tool === 'calib') {
-          d.calib = { a, b: p, meters: m }; d.pxPerM = px / m;
+          d.calib = { a, b: p, meters: m }; d.pxPerM = px / m; d.scaleRatio = null;
           // keep any check consistent with the new scale
           if (d.check) d.check.errPct = ((dist(d.check.a, d.check.b) / d.pxPerM) - d.check.meters) / d.check.meters * 100;
         } else {
           d.check = { a, b: p, meters: m, errPct: this.ppm ? ((px / this.ppm) - m) / m * 100 : null };
         }
         this.onChange(); break;
+      }
+      case 'ratio': {
+        // Scale from the drawing's printed ratio (1:24, 1/4" = 1' ...) and a length measured on the paper.
+        if (!this.pending) { this.pending = p; break; }
+        const a = this.pending; this.pending = null;
+        const px = dist(a, p);
+        const imp = getUnit() === 'ft';
+        const r = await this.ask('Set scale from drawing ratio', [
+          { name: 'scale', label: 'Scale printed on the drawing', type: 'select', options: SCALES.map((x) => x.label), value: SCALES.find((x) => x.n === (imp ? 48 : 50)).label },
+          { name: 'custom', label: 'Or a custom ratio (for example 1:75). Leave blank to use the list', type: 'text', value: '' },
+          { name: 'sheet', label: 'How long are those two points on the paper?', type: 'select', options: ['I measured it (type below)', ...Object.keys(SHEETS)], value: 'I measured it (type below)' },
+          { name: 'paper', label: `Length on the paper (${imp ? 'inches' : 'mm'}), measured with a ruler on the printout`, type: 'text', value: '' }],
+          'Tap both ends of something you can measure on the paper, such as a printed line or the edge of the sheet.');
+        if (!r || px < 3) break;
+        let n = scaleByLabel(r.scale)?.n;
+        const cm = String(r.custom || '').trim().match(/^1\s*[:/]\s*(\d+(?:\.\d+)?)$/);
+        if (r.custom && String(r.custom).trim()) { if (!cm) { await this.ask('Scale not understood', [], 'Type a ratio like 1:75.'); break; } n = Number(cm[1]); }
+        const paperM = SHEETS[r.sheet] != null ? SHEETS[r.sheet] / 1000 : parseLen(r.paper, imp ? 'in' : 'mm');
+        if (!(paperM > 0) || !(n > 0)) { await this.ask('Missing length', [], 'Enter the length on the paper, or choose the sheet size.'); break; }
+        const meters = paperM * n;
+        d.calib = { a, b: p, meters, ratio: n }; d.pxPerM = px / meters; d.scaleRatio = n;
+        if (d.check) d.check.errPct = ((dist(d.check.a, d.check.b) / d.pxPerM) - d.check.meters) / d.check.meters * 100;
+        this.onChange(); break;
+      }
+      case 'measure': {
+        if (!this.ppm) { await this.ask('Set the scale first', [], 'Set the scale before measuring.'); break; }
+        if (!this.pending) { this.pending = p; this.measured = null; break; }
+        this.measured = { a: this.pending, b: p }; this.pending = null; break;
       }
       case 'wall': {
         if (!this.ppm) { await this.ask('Set the scale first', [], 'Use "Set scale" and tap the two ends of a printed dimension before tracing walls.'); break; }
@@ -159,18 +211,20 @@ export class Tracer {
         const n = this.nearestWall(p); if (!n) break;
         const r = await this.ask('Door or window', [
           { name: 'kind', label: 'Type', type: 'select', options: ['door', 'window'], value: 'door' },
-          { name: 'width', label: 'Width (m)', type: 'number', value: '0.9', step: 'any' },
-          { name: 'sill', label: 'Sill height (m)', type: 'number', value: '0', step: 'any' },
-          { name: 'head', label: 'Head height (m)', type: 'number', value: '2.04', step: 'any' }]);
+          { name: 'width', label: `Width (${getUnit()})`, type: 'text', value: num(0.9, 2) },
+          { name: 'sill', label: `Sill height (${getUnit()})`, type: 'text', value: num(0, 2) },
+          { name: 'head', label: `Head height (${getUnit()})`, type: 'text', value: num(2.04, 2) }]);
         if (!r) break;
-        d.openings.push({ id: uid().slice(0, 8), wall: n.wall.id, t: n.t, kind: r.kind, width: Number(r.width), sill: Number(r.sill), head: Number(r.head) });
+        const w = parseLen(r.width), sill = parseLen(r.sill), head = parseLen(r.head);
+        if (!(w > 0) || !(sill >= 0) || !(head > sill)) { await this.ask('Check the sizes', [], 'Width, sill and head heights need to be sensible numbers.'); break; }
+        d.openings.push({ id: uid().slice(0, 8), wall: n.wall.id, t: n.t, kind: r.kind, width: w, sill, head });
         this.onChange(); break;
       }
       case 'marker': {
         const n = this.nearestWall(p, 30);
         const r = await this.ask('Marker', [
-          { name: 'h', label: 'Height of marker centre above floor (m)', type: 'number', value: '1.5', step: 'any' },
-          { name: 'size', label: 'Printed size (m, edge to edge)', type: 'number', value: '0.15', step: 'any' },
+          { name: 'h', label: `Height of marker centre above floor (${getUnit()})`, type: 'text', value: num(1.5, 2) },
+          { name: 'size', label: `Printed size (${getUnit()}, edge to edge)`, type: 'text', value: num(0.15, 3) },
           ...(n ? [] : [{ name: 'yaw', label: 'Facing direction (degrees: 0 = right on the drawing, 90 = down the page)', type: 'number', value: '90', step: 'any' }])]);
         if (!r) break;
         let pos = p, facing;
@@ -181,7 +235,9 @@ export class Tracer {
           if ((p[0] - pos[0]) * nx + (p[1] - pos[1]) * ny < 0) { nx = -nx; ny = -ny; } // face the side you clicked
           facing = [nx, ny];
         } else { const a = Number(r.yaw) * Math.PI / 180; facing = [Math.cos(a), Math.sin(a)]; }
-        d.marker = { pos, facing, heightM: Number(r.h), sizeM: Number(r.size) };
+        const hm = parseLen(r.h), sm = parseLen(r.size);
+        if (!(hm >= 0) || !(sm > 0)) { await this.ask('Check the sizes', [], 'Height and printed size need to be numbers.'); break; }
+        d.marker = { pos, facing, heightM: hm, sizeM: sm };
         this.onChange(); break;
       }
       case 'erase': {
@@ -235,8 +291,31 @@ export class Tracer {
       const q = this.snapPoint(this.mouse, this.chain, false);
       line(this.chain, q, '#ffffff', 2, [6, 4]);
       if (this.ppm) { ctx.fillStyle = '#fff'; ctx.font = `${lw(14)}px sans-serif`;
-        ctx.fillText((dist(this.chain, q) / this.ppm).toFixed(2) + ' m', q[0] + lw(10), q[1] - lw(10)); }
+        ctx.fillText(fmt(dist(this.chain, q) / this.ppm), q[0] + lw(10), q[1] - lw(10)); }
+    }
+    // measure tool
+    const ms = this.measured || (this.tool === 'measure' && this.pending ? { a: this.pending, b: this.mouse } : null);
+    if (ms && this.ppm) {
+      line(ms.a, ms.b, '#7CFC00', 2); dot(ms.a, '#7CFC00'); dot(ms.b, '#7CFC00');
+      ctx.fillStyle = '#7CFC00'; ctx.font = `bold ${lw(15)}px sans-serif`;
+      ctx.fillText(fmt(dist(ms.a, ms.b) / this.ppm), (ms.a[0] + ms.b[0]) / 2 + lw(8), (ms.a[1] + ms.b[1]) / 2 - lw(8));
     }
     ctx.restore();
+    this.drawScaleBar();
+  }
+
+  /** Scale ruler fixed to the bottom-left of the view, in the current unit. */
+  drawScaleBar() {
+    if (!this.ppm) return;
+    const { ctx } = this, w = this.canvas.width / this.dpr, h = this.canvas.height / this.dpr;
+    const bar = niceBar(this.ppm * this.view.s, Math.min(220, w * 0.4));
+    const x = 16, y = h - 22, n = bar.v >= 1 ? Math.min(5, Math.round(bar.v)) || 1 : 2;
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(x - 8, y - 38, bar.px + 74, 54);
+    ctx.strokeStyle = '#fff'; ctx.fillStyle = '#fff'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + bar.px, y); ctx.stroke();
+    for (let i = 0; i <= n; i++) { const tx = x + (bar.px * i) / n; ctx.beginPath(); ctx.moveTo(tx, y); ctx.lineTo(tx, y - (i % n === 0 ? 10 : 6)); ctx.stroke(); }
+    ctx.font = '13px sans-serif'; ctx.fillText(bar.label, x + bar.px + 8, y - 2);
+    if (this.drawing.scaleRatio) ctx.fillText(`Drawn at 1:${this.drawing.scaleRatio}`, x, y - 22);
   }
 }

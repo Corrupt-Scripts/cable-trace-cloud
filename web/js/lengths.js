@@ -1,3 +1,4 @@
+import { fmt as fmtU } from './units.js';
 // Same maths as the phone app's lib/analysis/length_check.dart.
 export const COPPER = 0.0181; // ohm·mm²/m at 20 °C
 
@@ -20,7 +21,7 @@ export function polyLength(pts) {
 export const wpLength = (w) => polyLength(w.map((p) => [p.x, p.y, p.z]));
 
 export function checkLength(mapped, expected) {
-  const m = (v) => v.toFixed(1) + ' m';
+  const m = (v) => fmtU(v, 1);
   if (!(expected > 0)) return { status: 'unknown', warn: false, message: 'No cable length to compare with.' };
   const tol = Math.max(0.5, 0.15 * expected), gap = expected - mapped;
   if (Math.abs(gap) <= tol) return { status: 'matches', warn: false, message: `Mapped ${m(mapped)}, cable is ${m(expected)}. Matches within AR accuracy.` };
@@ -35,7 +36,7 @@ export function positionAlong(w, d) {
     run += Math.hypot(w[i].x - w[i - 1].x, w[i].y - w[i - 1].y, w[i].z - w[i - 1].z);
     if (d <= run) return `between points ${i} and ${i + 1}`;
   }
-  return `past the last mapped point (by ${(d - run).toFixed(1)} m)`;
+  return `past the last mapped point (by ${fmtU(d - run, 1)})`;
 }
 
 /** Recorded waypoints (phone AR frame) -> the drawing's model frame, through the shared marker.

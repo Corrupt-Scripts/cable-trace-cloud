@@ -24,6 +24,7 @@ export class Model3D {
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.05, 500);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
+    this.controls.zoomToCursor = true; this.controls.minDistance = 0.3; this.controls.maxDistance = 400; this.controls.zoomSpeed = 1.3;
     this.scene.add(new THREE.AmbientLight(0xffffff, 1.1));
     const dl = new THREE.DirectionalLight(0xffffff, 1.2); dl.position.set(5, 10, 3); this.scene.add(dl);
     this.world = new THREE.Group(); this.scene.add(this.world);
@@ -86,6 +87,12 @@ export class Model3D {
     }
   }
 
+  /** Move the camera towards (f<1) or away from (f>1) the point it orbits. */
+  zoomBy(f) {
+    const t = this.controls.target, p = this.camera.position;
+    const dir = p.clone().sub(t), len = Math.max(this.controls.minDistance, Math.min(this.controls.maxDistance, dir.length() * f));
+    p.copy(t).add(dir.setLength(len)); this.controls.update();
+  }
   frameAll() {
     const d = this.drawing;
     const w = d.imgW && this.ppm ? d.imgW / this.ppm : 10, h = d.imgH && this.ppm ? d.imgH / this.ppm : 10;
