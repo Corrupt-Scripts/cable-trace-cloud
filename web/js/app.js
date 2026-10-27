@@ -37,7 +37,7 @@ function viewLogin(err = '', mode = 'login', keep = {}) {
   main.innerHTML = `<div class="card" style="max-width:420px;margin:60px auto"><h2 style="margin-top:0">Cable Trace</h2>
     <p class="dim">${su ? 'Create an account with your invite code.' : 'Sign in to see your team\'s jobs.'}</p>
     ${su ? '<label>Your name</label><input id="nm" autocomplete="name" value="'+v('nm')+'" style="width:100%">' : ''}
-    <label>Email</label><input id="em" type="email" autocomplete="username" autocapitalize="off" value="'+v('em')+'" style="width:100%">
+    <label>Email</label><input id="em" type="email" autocomplete="username" autocapitalize="off" value="${v('em')}" style="width:100%">
     <label>Password${su ? ' (at least 10 characters)' : ''}</label><input id="pw" type="password" autocomplete="${su ? 'new-password' : 'current-password'}" style="width:100%">
     ${su ? '<label>Invite code</label><input id="cd" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" value="'+v('cd')+'" style="width:100%"><label>Team name (only if you are starting a new team)</label><input id="tn" value="'+v('tn')+'" style="width:100%">' : ''}
     <p class="warn">${esc(err)}</p>
