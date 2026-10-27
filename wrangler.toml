@@ -1,0 +1,25 @@
+name = "cable-trace"
+main = "src/worker.js"
+compatibility_date = "2025-09-01"
+
+# The website: served from ./web. API paths go to the Worker first.
+[assets]
+directory = "./web"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+
+# Database: jobs, runs, drawings, users, teams. After `wrangler d1 create cable-trace`,
+# paste the database_id it prints below.
+[[d1_databases]]
+binding = "DB"
+database_name = "cable-trace"
+database_id = "fdaa0fa0-4761-4a36-8934-b0173be71da6"
+migrations_dir = "migrations"
+
+# File storage: drawing photos and waypoint photos.
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "cable-trace-files"
+
+# Secret (not stored here): SIGNUP_CODE, the code that lets someone create a NEW team.
+# Set it with:  npx wrangler secret put SIGNUP_CODE

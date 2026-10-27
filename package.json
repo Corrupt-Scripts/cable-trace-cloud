@@ -1,0 +1,13 @@
+{
+  "name": "cable-trace-cloud",
+  "version": "0.5.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "migrate:local": "wrangler d1 migrations apply cable-trace --local",
+    "migrate:remote": "wrangler d1 migrations apply cable-trace --remote"
+  },
+  "devDependencies": { "wrangler": "^4.0.0" }
+}
